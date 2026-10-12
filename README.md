@@ -6,7 +6,21 @@ Repository: `Faka-iAction/architecture-public` (FAKA iAction platform, Architect
 
 ## Status
 
-Scaffold only. Nothing is implemented yet.
+Design documentation only. Nothing is implemented yet.
+
+## Contents
+
+| File | What it covers |
+|---|---|
+| [OVERVIEW.md](OVERVIEW.md) | The architecture explained for an engineer: what the platform is, the member and creator model, Creator Actions, the three separate lifecycles, the non-custodial ledger, QR resolution, one database with four backends, contract-first development, clients, and events. Includes diagrams. |
+| [DECISIONS.md](DECISIONS.md) | The main design decisions, one paragraph each: what was decided and what it means. |
+
+New to the project? Start with [What is FAKA iAction](https://github.com/Faka-iAction/docs-public/blob/main/WHAT_IS_FAKA_IACTION.md) in the documentation repository, then read the overview here.
+
+Related repositories:
+
+- [docs-public](https://github.com/Faka-iAction/docs-public) — plain-language introduction, scope of the first release, roadmap and glossary.
+- [contracts-public](https://github.com/Faka-iAction/contracts-public) — the contract-first approach. The contracts themselves are planned for roadmap milestone M1.
 
 ## Visibility
 
