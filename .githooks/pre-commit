@@ -1,0 +1,176 @@
+#!/bin/sh
+# Secret-scanning pre-commit hook.
+#
+# Inspects only the ADDED lines of the staged diff and blocks the commit when
+# a line looks like a credential, or when a staged file has a name that
+# normally holds one. POSIX sh; needs only git, grep and sed.
+#
+# Enable:        git config core.hooksPath .githooks
+# Allow a line:  put the marker  secret-scan:allow  on that line
+# Full scan:     sh .githooks/pre-commit --all   (every file in the index)
+
+LC_ALL=C
+export LC_ALL
+
+MARKER='secret-scan:allow'
+TAB=$(printf '\t')
+CR=$(printf '\r')
+Q="'"
+
+if [ "$1" = "--all" ]; then
+    BASE=$(git hash-object -t tree /dev/null) || exit 1
+else
+    BASE=
+fi
+
+staged_diff() {
+    # $BASE is intentionally unquoted: empty means "compare with HEAD".
+    git -c core.quotepath=off diff --cached --no-color --no-ext-diff \
+        --src-prefix=a/ --dst-prefix=b/ --diff-filter=ACMR "$@" $BASE
+}
+
+# --- 1. file names that must never be committed -----------------------------
+
+name_findings=$(
+    staged_diff --name-only | while IFS= read -r path; do
+        base=${path##*/}
+        case "$base" in
+            .env.local|.env.*.local|*.pem|*.key|id_rsa*)
+                printf '  %s  [forbidden file name]\n' "$path" ;;
+        esac
+    done
+)
+
+# --- 2. added lines, as "path<TAB>line<TAB>content" -------------------------
+
+added=$(
+    staged_diff -U0 | grep -a -E '^(\+|@@|diff --git )' |
+    while IFS= read -r line; do
+        case "$line" in
+            'diff --git '*)
+                in_hunk=0; file=
+                ;;
+            '@@'*)
+                in_hunk=1
+                n=${line#*+}; n=${n%% *}; n=${n%%,*}
+                ;;
+            '+'*)
+                if [ "$in_hunk" = 1 ]; then
+                    text=${line#+}
+                    text=${text%"$CR"}
+                    case "$text" in
+                        *"$MARKER"*) ;;
+                        *) printf '%s\t%s\t%s\n' "$file" "$n" "$text" ;;
+                    esac
+                    n=$((n + 1))
+                else
+                    case "$line" in
+                        '+++ b/'*)   file=${line#+++ b/}; file=${file%"$TAB"} ;;
+                        '+++ "b/'*)  file=${line#+++ \"b/}; file=${file%\"} ;;
+                    esac
+                fi
+                ;;
+        esac
+    done
+)
+
+# --- 3. patterns -------------------------------------------------------------
+
+# Print "path:line  [label]" for every added line matching the pattern.
+scan() {
+    printf '%s\n' "$added" | grep -a -E -e "$2" |
+        sed -E "s/^([^$TAB]*)$TAB([0-9]*)$TAB.*\$/  \\1:\\2  [$1]/"
+}
+
+# True when the (lower-cased) value is an obvious placeholder.
+is_placeholder() {
+    case "$1" in
+        ''|*placeholder*|*change-me*|*changeme*|*example*|*xxx*|*'<'*|*'${'*|*'%env('*)
+            return 0 ;;
+    esac
+    return 1
+}
+
+LOWER='y/ABCDEFGHIJKLMNOPQRSTUVWXYZ/abcdefghijklmnopqrstuvwxyz/'
+
+# NAME = VALUE where NAME contains a sensitive word and VALUE is one unbroken
+# run of 20+ key-like characters. Treated as a secret only when the value
+# mixes letters and digits and is not a placeholder.
+RE_ASSIGN='[A-Za-z0-9_.-]*(SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY)[A-Za-z0-9_.-]*["'$Q']?[[:space:]]*(=>|:=|=|:)[[:space:]]*["'$Q']?[A-Za-z0-9+/_=.-]{20,}(["'$Q'[:space:];,#)}]|$)'
+
+scan_assignments() {
+    printf '%s\n' "$added" | grep -a -i -E -e "$RE_ASSIGN" |
+    while IFS= read -r cand; do
+        file=${cand%%"$TAB"*}
+        rest=${cand#*"$TAB"}
+        n=${rest%%"$TAB"*}
+        text=${rest#*"$TAB"}
+        printf '%s\n' "$text" | grep -a -o -i -E -e "$RE_ASSIGN" |
+            sed -E -e 's/^[^=:]*(=>|:=|=|:)[[:space:]]*["'$Q']?//' \
+                   -e 's/["'$Q'[:space:];,#)}]$//' -e "$LOWER" |
+        while IFS= read -r value; do
+            is_placeholder "$value" && continue
+            case "$value" in *[0-9]*) ;; *) continue ;; esac
+            case "$value" in *[a-z]*) ;; *) continue ;; esac
+            printf '  %s:%s  [secret-like value assigned to a sensitive name]\n' "$file" "$n"
+            break
+        done
+    done
+}
+
+# scheme://user:password@host with a password that is not a placeholder.
+RE_DBURL='(mysql|mariadb|postgres|postgresql|pgsql|sqlsrv|mssql|oracle|mongodb|mongodb\+srv|redis|rediss|amqp|amqps)://[^:/@[:space:]"'$Q']*:[^@/[:space:]"'$Q']+@'
+
+scan_db_urls() {
+    printf '%s\n' "$added" | grep -a -i -E -e "$RE_DBURL" |
+    while IFS= read -r cand; do
+        file=${cand%%"$TAB"*}
+        rest=${cand#*"$TAB"}
+        n=${rest%%"$TAB"*}
+        text=${rest#*"$TAB"}
+        printf '%s\n' "$text" | grep -a -o -i -E -e "$RE_DBURL" |
+            sed -E -e 's/^[^:]*:\/\/[^:]*://' -e 's/@$//' -e "$LOWER" |
+        while IFS= read -r value; do
+            is_placeholder "$value" && continue
+            printf '  %s:%s  [database URL with a password]\n' "$file" "$n"
+            break
+        done
+    done
+}
+
+line_findings=$(
+    scan 'private key'       '--+ ?BEGIN ([A-Z0-9]+ )*PRIVATE KEY'
+    scan 'AWS access key ID' '(^|[^A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}([^A-Za-z0-9]|$)'
+    scan 'GitHub token'      '(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,})'
+    scan 'Slack token'       'xox[a-zA-Z]-[A-Za-z0-9-]{10,}'
+    scan 'live payment key'  '(sk|pk|rk)_live_[0-9A-Za-z]{10,}'
+    scan_assignments
+    scan_db_urls
+)
+
+# --- 4. verdict --------------------------------------------------------------
+
+if [ -z "$name_findings" ] && [ -z "$line_findings" ]; then
+    exit 0
+fi
+
+{
+    echo
+    echo 'secret-scan: commit blocked - possible secrets in the staged changes.'
+    echo
+    if [ -n "$name_findings" ]; then
+        printf '%s\n' "$name_findings"
+    fi
+    if [ -n "$line_findings" ]; then
+        printf '%s\n' "$line_findings"
+    fi
+    echo
+    echo 'Fix:   remove the value and load it from the environment or a secret'
+    echo '       store; unstage a file with "git restore --staged <file>" and add'
+    echo '       it to .gitignore. If a real secret was ever committed or shared,'
+    echo '       rotate it.'
+    echo "Allow: for a false positive, put the marker $MARKER on that line"
+    echo '       (in a comment) and stage it again.'
+    echo
+} >&2
+exit 1
