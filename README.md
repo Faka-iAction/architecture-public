@@ -6,7 +6,7 @@ Repository: `Faka-iAction/architecture-public` (FAKA iAction platform, Architect
 
 ## Status
 
-Design documentation only. Nothing is implemented yet.
+The architecture (version 2.10, approved on 2026-10-13) is being implemented. The Symfony web app and API ([api-symfony-public](https://github.com/Faka-iAction/api-symfony-public)) and the Flutter mobile app ([flutter-public](https://github.com/Faka-iAction/flutter-public)) are built and tested locally; nothing is deployed yet. Their public repositories show the structure of that code, not its implementation. The [roadmap](https://github.com/Faka-iAction/docs-public/blob/main/ROADMAP.md) says what each milestone has and what it still needs.
 
 ## Contents
 
